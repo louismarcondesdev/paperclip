@@ -61,7 +61,7 @@ Manual browser and device consent still require an operator role. Device codes a
 and organization. The gateway's Connections invitations remain personal
 assistant invitations; use the agent's Dot connection panel for Runner pairing.
 
-Database migration `0312_broken_sentinels.sql` adds only Dot tables and extensions
+Database migration `0317_messy_famine.sql` adds only Dot tables and extensions
 after the merged gateway migrations. It is safe to reapply. The earlier
 prototype migration number is retired; published master migrations are intact.
 
@@ -348,7 +348,7 @@ server-side authorization.
 | Area | Runner tools |
 | --- | --- |
 | Identity and people | `get_identity`, `list_people`, `list_agents`, `get_agent` |
-| Task work | `get_task_context`, `get_task_history`, `search_tasks`, `get_task`, `report_progress`, `set_task_title`, `create_task`, `reassign_task`, `set_dependencies`, `comment_on_task` |
+| Task work | `get_task_context`, `get_task_history`, `search_tasks`, `get_task`, `report_progress`, `set_task_title`, `set_task_monitor`, `create_task`, `reassign_task`, `set_dependencies`, `comment_on_task` |
 | Human input and approvals | `request_human_input`, `list_approvals`, `get_approval`, `get_approval_context` |
 | Documents | `list_documents`, `read_document`, `list_document_revisions`, `write_document`, `list_task_documents`, `read_task_document`, `write_task_document` |
 | Agent instructions | `read_agent_instructions`, `update_agent_instructions`, `get_agent_instruction_history`, `restore_agent_instructions` |

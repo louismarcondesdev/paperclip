@@ -1,3 +1,4 @@
+import { configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
 import {
   createCipheriv,
@@ -3453,7 +3454,7 @@ function runnerEnvironment(
         if (explicitSource[key] !== undefined) environment[key] = explicitSource[key];
       }
     }
-    Object.assign(environment, githubCredentialEnvironment(explicitSource));
+    Object.assign(environment, githubCredentialEnvironment(explicitSource), configuredEnvironment(explicitSource));
   }
   return environment;
 }
