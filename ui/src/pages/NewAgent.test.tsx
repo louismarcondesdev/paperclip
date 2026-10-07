@@ -206,6 +206,8 @@ describe("New agent setup", () => {
     expect(container.textContent).toContain("OpenAI Dot");
     expect(container.querySelector('[aria-label="Model"]')).toBeNull();
     expect(container.textContent).not.toContain("Connect a model");
+    expect(container.textContent).toContain("Check prerequisites");
+    expect(container.textContent).not.toContain("runtime and model can respond");
     await click("Finish setup");
     expect(api.hire).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Acknowledge external provider billing");

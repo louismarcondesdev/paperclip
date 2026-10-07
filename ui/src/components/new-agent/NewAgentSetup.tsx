@@ -1161,6 +1161,7 @@ function Setup({
                       )}
                     </fieldset>
                     <RuntimeTestCard
+                      variant={isDot ? "prerequisites" : "connection"}
                       state={testState}
                       result={result}
                       error={error}
