@@ -6050,7 +6050,7 @@ describe("company portability", () => {
       .rejects.toMatchObject({ status: 422, details: { code: "paperclip_runner_rollout_disabled" } });
     expect(agentSvc.create).not.toHaveBeenCalled();
     await portability.importBundle(input, "user-1");
-    expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterType: "paperclip_runner", adapterConfig: expect.objectContaining({ provider: "openai_dot", allowUnmeteredProvider: true }) }));
+    expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterType: "paperclip_runner", adapterConfig: expect.objectContaining({ provider: "openai_dot", allowUnmeteredProvider: true }) }), { createdByUserId: "user-1" });
     const createdConfig = agentSvc.create.mock.calls[0]![1].adapterConfig;
     expect(createdConfig.dotBindingId).toBeUndefined();
     const { resolvePaperclipRunnerProviderProfile } = await import("../services/native-runtime/provider-profile.js");
