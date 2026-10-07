@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, agents, assets, companies, createDb, heartbeatRuns, issueAttachments, issues } from "@paperclipai/db";
+import { activityLog, agents, assets, companies, createDb, heartbeatRuns, issueAttachments, issues, runnerApiResponseReservations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import type { StorageService } from "../../storage/types.js";
+import { TaskAttachmentReadCache } from "./runner-task-attachments.js";
+import { runnerApiCatalog } from "./runner-api-catalog.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 
 const sha = (body: Buffer) => createHash("sha256").update(body).digest("hex");
@@ -13,6 +15,7 @@ describe("Dot assigned-task attachment reading", () => {
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => { temporary = await startEmbeddedPostgresTestDatabase("dot-task-files-"); db = createDb(temporary.connectionString); });
   afterAll(async () => { await temporary?.cleanup(); });
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
   async function fixture(body = Buffer.from("only in the file 🌍"), enabled = true) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Files", issuePrefix: `F${companyId.slice(0, 6)}` });
@@ -26,7 +29,7 @@ describe("Dot assigned-task attachment reading", () => {
     const getObject = vi.fn().mockImplementation(async () => ({ stream: Readable.from([body]) }));
     const storage = { provider: "local_disk", getObject } as unknown as StorageService;
     const assertBridgeAuthority = vi.fn().mockResolvedValue(undefined);
-    const binding = { companyId, agentId, issueId, runId, taskAttachmentRead: enabled, storage, assertBridgeAuthority };
+    const binding = { companyId, agentId, issueId, runId, dotRuntime: true, taskAttachmentRead: enabled, storage, assertBridgeAuthority };
     const authority = new PaperclipRunnerToolAuthority(db, binding);
     const call = (tool: string, args: unknown = {}) => authority.execute({ tool, callId: randomUUID(), arguments: args });
     return { ...binding, authority, call, asset: asset!, attachment: attachment!, body, getObject };
@@ -95,8 +98,74 @@ describe("Dot assigned-task attachment reading", () => {
     expect(first).toMatchObject({ returnedBytes: 11999, nextOffset: 11999, content: "x".repeat(11999) });
     const second = await f.call("read_task_attachment", { attachmentId: f.attachment.id, offset: first.nextOffset, expectedSha256: first.sha256 });
     expect(second).toMatchObject({ content: "🌍tail", nextOffset: null, returnedBytes: 8 });
+    expect(f.getObject).toHaveBeenCalledTimes(1);
     expect(await f.call("read_task_attachment", { attachmentId: f.attachment.id, offset: 12000 })).toMatchObject({ outcome: "failed", code: "runner_attachment_offset_invalid" });
     expect(await f.call("read_task_attachment", { attachmentId: f.attachment.id, expectedSha256: "0".repeat(64) })).toMatchObject({ outcome: "failed", code: "runner_attachment_changed" });
+  });
+  it("clears cached bytes on closure and checks deleted attachment links on cached pages", async () => {
+    const f = await fixture();
+    await f.call("read_task_attachment", { attachmentId: f.attachment.id });
+    await db.delete(issueAttachments).where(eq(issueAttachments.id, f.attachment.id));
+    expect(await f.call("read_task_attachment", { attachmentId: f.attachment.id })).toMatchObject({ code: "runner_attachment_not_found" });
+    expect(f.getObject).toHaveBeenCalledTimes(1);
+    const closed = await fixture();
+    await closed.call("read_task_attachment", { attachmentId: closed.attachment.id });
+    closed.authority.close();
+    expect(await closed.call("read_task_attachment", { attachmentId: closed.attachment.id })).toMatchObject({ code: "runner_attachment_scope_closed" });
+    expect(closed.getObject).toHaveBeenCalledTimes(1);
+  });
+  it.each([false, true])("prevents generic API attachment and workspace downloads with attachment grant %s", async enabled => {
+    const f = await fixture(Buffer.from("private input"), enabled);
+    for (const [path, pathParams] of [
+      ["/api/attachments/{attachmentId}/content", { attachmentId: f.attachment.id }],
+      ["/api/assets/{assetId}/content", { assetId: f.asset.id }],
+      ["/api/issues/{issueId}/file-resources/content", { issueId: f.issueId }],
+    ] as const) {
+      const operation = runnerApiCatalog().find(o => o.method === "GET" && o.path === path)!;
+      await expect(f.call("call_api", { operationId: operation.operationId, pathParams })).rejects.toThrow(/Dot must use|Dot may read/);
+    }
+    const upload = runnerApiCatalog().find(o => o.method === "POST" && o.path === "/api/companies/{companyId}/issues/{issueId}/attachments")!;
+    await expect(f.call("call_api", { operationId: upload.operationId, pathParams: { companyId: f.companyId, issueId: f.issueId }, contentType: "multipart/form-data", files: [{ path: "private.txt" }] })).rejects.toThrow("workspace access");
+    await expect(f.call("call_api", { operationId: upload.operationId, pathParams: { companyId: f.companyId, issueId: f.issueId }, contentType: "multipart/form-data", files: [{ artifactId: f.asset.id }] })).rejects.toThrow("this run only");
+    expect(f.getObject).not.toHaveBeenCalled();
+  });
+  it("retains pagination of this run's API captures while rejecting another run's capture", async () => {
+    const f = await fixture(Buffer.from("captured")), other = await fixture();
+    await db.insert(runnerApiResponseReservations).values([
+      { companyId: f.companyId, runId: f.runId, assetId: f.asset.id, reservedBytes: f.body.length },
+      { companyId: other.companyId, runId: other.runId, assetId: other.asset.id, reservedBytes: other.body.length },
+    ]);
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "synthetic-test-key-not-a-live-credential");
+    vi.stubEnv("PAPERCLIP_API_URL", "http://127.0.0.1:3217");
+    const fetch = vi.fn().mockResolvedValue(new Response(f.body, { status: 206, headers: { "Content-Type": "text/plain", "Content-Range": `bytes 0-${f.body.length - 1}/${f.body.length}` } }));
+    vi.stubGlobal("fetch", fetch);
+    const operation = runnerApiCatalog().find(o => o.method === "GET" && o.path === "/api/assets/{assetId}/content")!;
+    expect(await f.call("call_api", { operationId: operation.operationId, pathParams: { assetId: f.asset.id } })).toMatchObject({ ok: true, data: "captured" });
+    await expect(f.call("call_api", { operationId: operation.operationId, pathParams: { assetId: other.asset.id } })).rejects.toThrow("this run only");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("deduplicates concurrent verification and clears a read still pending on closure", async () => {
+    const cache = new TaskAttachmentReadCache();
+    let resolve!: (body: Buffer) => void;
+    const load = vi.fn(() => new Promise<Buffer>(done => { resolve = done; }));
+    const first = cache.read("file", "v1", load), second = cache.read("file", "v1", load);
+    resolve(Buffer.from("verified"));
+    expect((await first).toString()).toBe("verified");
+    expect((await second).toString()).toBe("verified");
+    expect(load).toHaveBeenCalledTimes(1);
+    const pending = cache.read("later", "v1", load);
+    cache.close(); resolve(Buffer.from("must not retain"));
+    await expect(pending).rejects.toThrow("scope_closed");
+    await expect(cache.read("file", "v1", load)).rejects.toThrow("scope_closed");
+  });
+  it("evicts verified copies when the per-run memory budget is reached", async () => {
+    const cache = new TaskAttachmentReadCache(), first = vi.fn(async () => Buffer.alloc(8 * 1024 * 1024));
+    await cache.read("first", "v1", first);
+    await cache.read("second", "v1", async () => Buffer.alloc(8 * 1024 * 1024));
+    await cache.read("third", "v1", async () => Buffer.from("x"));
+    await cache.read("first", "v1", first);
+    expect(first).toHaveBeenCalledTimes(2);
+    cache.close();
   });
   it("reads binary pages explicitly as base64 and supports empty files", async () => {
     const f = await fixture(Buffer.from([0xff, 0x00, 0x81]));

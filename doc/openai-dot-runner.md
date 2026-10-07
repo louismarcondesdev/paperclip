@@ -360,12 +360,20 @@ of **Workspace files and commands** and is never inherited by a hired teammate.
 Reads are restricted to the current run's assigned task and company, recheck
 live run/binding/setting authority before returning, verify byte size and
 SHA-256, and return at most 12,000 bytes per page from files up to 16 MiB.
+Each run keeps a verified in-memory copy bounded to 16 MiB and 20 files;
+subsequent pages reuse those bytes and recheck file metadata and live access.
+Closing the run clears the cache. Agent configuration routes reject attempts
+to change the operator-owned attachment, workspace, and pairing flags.
 Text pages preserve UTF-8 boundaries; binary files use base64. Pass the returned
 SHA-256 on subsequent pages to detect changes. Missing, oversized or corrupt
 files return terminal errors. Read audit entries contain metadata, never file
 contents. Revocation blocks further reads, but cannot withdraw bytes already
 sent to OpenAI. Files and filenames remain untrusted input. There is no public
-attachment URL or Paperclip credential exposed to Dot.
+attachment URL or Paperclip credential exposed to Dot. Generic `call_api`
+attachment and workspace downloads cannot bypass these settings; use the scoped
+read tools. Raw asset reads and uploads are limited to API captures and output
+artifacts from the current run. API uploads from workspace paths require the
+workspace grant and the same confined root as workspace tools.
 
 A plugin upgraded during a running Dot conversation can retain an old top-level
 tool catalog. Refresh its tools in ChatGPT plugin settings and reattach it.

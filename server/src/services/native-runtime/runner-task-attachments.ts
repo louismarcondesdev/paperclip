@@ -26,6 +26,43 @@ export const TASK_ATTACHMENT_DEFINITIONS = Object.entries(TASK_ATTACHMENT_SCHEMA
   inputSchema: z.toJSONSchema(schema),
 }));
 
+/** One server-owned run lifetime, at most 16 MiB, 20 entries and two concurrent fetches. */
+export class TaskAttachmentReadCache {
+  #entries = new Map<string, { signature: string; body: Buffer }>();
+  #pending = new Map<string, Promise<Buffer>>();
+  #bytes = 0;
+  #closed = false;
+  assertOpen() { if (this.#closed) throw new Error("runner_attachment_scope_closed"); }
+  close() { this.#closed = true; this.#entries.clear(); this.#pending.clear(); this.#bytes = 0; }
+  async read(id: string, signature: string, load: () => Promise<Buffer>): Promise<Buffer> {
+    this.assertOpen();
+    const cached = this.#entries.get(id);
+    if (cached?.signature === signature) {
+      this.#entries.delete(id); this.#entries.set(id, cached);
+      return cached.body;
+    }
+    const key = JSON.stringify([id, signature]);
+    let pending = this.#pending.get(key);
+    if (!pending) {
+      if (this.#pending.size >= 2) throw new Error("runner_attachment_read_busy");
+      pending = load(); this.#pending.set(key, pending);
+    }
+    let body: Buffer;
+    try { body = await pending; }
+    finally { if (this.#pending.get(key) === pending) this.#pending.delete(key); }
+    this.assertOpen();
+    const prior = this.#entries.get(id);
+    if (prior) { this.#bytes -= prior.body.length; this.#entries.delete(id); }
+    while (this.#entries.size >= 20 || this.#bytes + body.length > MAX_READ_BYTES) {
+      const oldest = this.#entries.keys().next().value;
+      if (oldest === undefined) throw new Error("runner_attachment_cache_size_limit");
+      this.#bytes -= this.#entries.get(oldest)!.body.length; this.#entries.delete(oldest);
+    }
+    this.#entries.set(id, { signature, body }); this.#bytes += body.length;
+    return body;
+  }
+}
+
 type Binding = { companyId: string; issueId: string; agentId: string; runId: string };
 const columns = { attachmentId: issueAttachments.id, sourceCommentId: issueAttachments.issueCommentId,
   filename: assets.originalFilename, contentType: assets.contentType, byteSize: assets.byteSize, sha256: assets.sha256 };
@@ -80,14 +117,15 @@ async function bytes(storage: StorageService, companyId: string, file: Awaited<R
   return body;
 }
 export async function readTaskAttachment(input: {
-  db: Db; binding: Binding; arguments: unknown; storage?: StorageService; authorize: () => Promise<void>;
+  db: Db; binding: Binding; arguments: unknown; storage?: StorageService; cache: TaskAttachmentReadCache; authorize: () => Promise<void>;
 }) {
   const args = TASK_ATTACHMENT_SCHEMAS.read_task_attachment.parse(input.arguments);
   await input.authorize();
   const file = await source(input.db, input.binding, args.attachmentId);
   if (args.expectedSha256 && args.expectedSha256 !== file.sha256.toLowerCase()) throw new Error("runner_attachment_changed");
   if (args.offset > file.byteSize) throw new Error("runner_attachment_offset_invalid");
-  const body = await bytes(input.storage ?? getStorageService(), input.binding.companyId, file);
+  const signature = JSON.stringify([file.objectKey, file.sha256, file.byteSize, file.contentType]);
+  const body = await input.cache.read(file.attachmentId, signature, () => bytes(input.storage ?? getStorageService(), input.binding.companyId, file));
   await input.authorize();
   const current = await source(input.db, input.binding, args.attachmentId);
   if (current.objectKey !== file.objectKey || current.sha256 !== file.sha256 || current.byteSize !== file.byteSize || current.contentType !== file.contentType)
@@ -103,6 +141,7 @@ export async function readTaskAttachment(input: {
     runId: input.binding.runId, action: "dot.attachment_read", entityType: "issue", entityId: input.binding.issueId,
     details: { attachmentId: file.attachmentId, offset: args.offset, returnedBytes: end - args.offset, sha256: file.sha256, encoding: args.encoding } });
   await input.authorize();
+  input.cache.assertOpen();
   const { objectKey: _privateKey, ...metadata } = file;
   return { ...metadata, encoding: args.encoding, content: body.subarray(args.offset, end).toString(args.encoding === "utf8" ? "utf8" : "base64"),
     offset: args.offset, returnedBytes: end - args.offset, nextOffset: end < body.length ? end : null,

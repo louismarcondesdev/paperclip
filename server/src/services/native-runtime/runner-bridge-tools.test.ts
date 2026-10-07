@@ -4,7 +4,7 @@ import { materializeAsset } from "./runtime-context.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { executeWorkspaceTool, readAssignedSkill, runnerBridgeDefinitions, workspaceCommandSandboxAvailable, settleRunnerBridgeRead } from "./runner-bridge-tools.js";
+import { executeWorkspaceTool, readAssignedSkill, readWorkspaceUploadFile, runnerBridgeDefinitions, workspaceCommandSandboxAvailable, settleRunnerBridgeRead } from "./runner-bridge-tools.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const root = async () => { const directory = await mkdtemp(join(tmpdir(), "dot-bridge-")); roots.push(directory); return directory; };
@@ -21,6 +21,9 @@ describe("Runner workspace bridge", () => {
     await expect(executeWorkspaceTool(directory, "workspace_read", { path: "../hello.txt" }, authorize)).rejects.toThrow();
     await writeFile(join(outside, "private.txt"), "PRIVATE");
     await symlink(outside, join(directory, "outside"));
+    await expect(readWorkspaceUploadFile(directory, "../private.txt")).rejects.toThrow();
+    await expect(readWorkspaceUploadFile(directory, "outside/private.txt")).rejects.toThrow("symlink_denied");
+    expect((await readWorkspaceUploadFile(directory, "hello.txt")).toString()).toBe("updated");
     await expect(executeWorkspaceTool(directory, "workspace_read", { path: "outside/private.txt" }, authorize)).rejects.toThrow("symlink");
   });
   it("serializes overlapping writes so only one observed hash can commit", async () => {

@@ -1514,6 +1514,7 @@ class SessionToolAuthorityEpoch {
 
   revoke(): void {
     this.#revoked = true;
+    this.#authority.close();
   }
 
   #assertCurrent(): void {
@@ -10945,6 +10946,7 @@ async function createRunnerdBackendWithinSessionClaim(
     runtimeContext: "runtimeContext" in input.execution ? input.execution.runtimeContext : undefined,
     workspaceBridge: input.execution.provider.kind === "openai_dot" && !!input.dotWorkspaceRoot,
     taskAttachmentRead: dotAttachmentActor?.config.dotAttachmentAccess === true,
+    dotRuntime: input.execution.provider.kind === "openai_dot",
     assertBridgeAuthority: input.execution.provider.kind === "openai_dot" ? () => dotRunnerBroker(input.db).assertRunAuthority(input.execution as import("../../vendor/paperclip-runner/index.js").NativeExecutionInputV6) : undefined,
     workspaceRoot: input.dotWorkspaceRoot ?? remoteTarget?.remoteCwd ?? input.execution.workspace.cwd ?? undefined,
     executionTargetKind: target.kind,

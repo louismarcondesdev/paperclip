@@ -1,5 +1,5 @@
-import { TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
-import { RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, settleRunnerBridgeRead } from "./runner-bridge-tools.js";
+import { TaskAttachmentReadCache, TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
+import { RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, readWorkspaceUploadFile, settleRunnerBridgeRead } from "./runner-bridge-tools.js";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 import { readTaskQuestionContext } from "../issue-question-context.js";
 import { isConversation } from "../agent-conversations.js";
@@ -62,6 +62,7 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueComments,
+  issueAttachments,
   issueDocuments,
   issues,
   projects,
@@ -136,6 +137,8 @@ type Binding = {
   workMode?: "standard" | "planning" | "ask";
   workspaceRoot?: string;
   workspaceBridge?: boolean;
+  /** Pinned provider identity; configuration edits cannot remove API file guards. */
+  dotRuntime?: boolean;
   /** Operator-approved Dot attachment access, pinned when the turn opens. */
   taskAttachmentRead?: boolean;
   runtimeContext?: NativeRuntimeContextSnapshot;
@@ -200,6 +203,8 @@ function canonicalJson(value: unknown): string {
 }
 
 export class PaperclipRunnerToolAuthority {
+  #taskAttachmentCache = new TaskAttachmentReadCache();
+  close() { this.#taskAttachmentCache.close(); }
   constructor(readonly db: Db, readonly binding: Binding) {}
 
   definitions(): Array<Record<string, unknown>> {
@@ -309,7 +314,7 @@ export class PaperclipRunnerToolAuthority {
       const parsed = schema.safeParse(call.arguments);
       if (!parsed.success) return { outcome: "failed", code: "runner_attachment_invalid_arguments", message: "Arguments do not match this tool's advertised schema." };
       return settleRunnerBridgeRead(async () => {
-        if (call.tool === "read_task_attachment") return readTaskAttachment({ db: this.db, binding: this.binding, arguments: parsed.data, storage: this.binding.storage, authorize });
+        if (call.tool === "read_task_attachment") return readTaskAttachment({ db: this.db, binding: this.binding, arguments: parsed.data, storage: this.binding.storage, cache: this.#taskAttachmentCache, authorize });
         const result = await listTaskAttachments(this.db, this.binding, (parsed.data as { after?: string }).after);
         await authorize();
         return result;
@@ -688,6 +693,7 @@ export class PaperclipRunnerToolAuthority {
     const bound = await this.#boundContext();
     const context = { ...this.binding, issueIdentifier: bound.issue.identifier, workMode: bound.issue.workMode };
     const { input, operation } = validateRunnerApiCall(value, context);
+    await this.#assertDotApiFileAccess(operation.path, input);
     const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
     if (!apiUrl) throw new Error("Paperclip API origin is unavailable");
     const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, bound.actor.adapterType, this.binding.runId, bound.run.responsibleUserId);
@@ -697,12 +703,13 @@ export class PaperclipRunnerToolAuthority {
       let storageAttempted = false;
       const current = await this.#boundContext();
       if (!runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled)) throw new Error("paperclip_runner_tool_not_advertised");
-      return executeRunnerApi(input, { ...context, workMode: current.issue.workMode }, {
+      const result = await executeRunnerApi(input, { ...context, workMode: current.issue.workMode }, {
         apiUrl, token,
         beforeDispatch: async () => {
           const fresh = await this.#boundContext();
           if (!runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled)) throw new Error("paperclip_runner_tool_not_advertised");
           validateRunnerApiCall(input, { ...context, workMode: fresh.issue.workMode });
+          await this.#assertDotApiFileAccess(operation.path, input);
         },
         readFile: (file) => this.#readApiFile(file),
         reserveResponseCapture: async () => {
@@ -738,6 +745,8 @@ export class PaperclipRunnerToolAuthority {
           return { artifactId: asset.id, url: `/api/assets/${asset.id}/content`, contentType, byteSize: saved.byteSize, sha256: saved.sha256 };
         },
       });
+      await this.#assertDotApiFileAccess(operation.path, input);
+      return result;
     };
     if (["GET", "HEAD", "OPTIONS"].includes(operation.method)) return execute();
     if (!callId || callId.length > 500) throw badRequest("A bounded runner call id is required");
@@ -843,7 +852,51 @@ export class PaperclipRunnerToolAuthority {
     } };
   }
 
+  async #dotOwnsApiAsset(assetId: string): Promise<boolean> {
+    const [capture] = await this.db.select({ id: runnerApiResponseReservations.id }).from(runnerApiResponseReservations).where(and(
+      eq(runnerApiResponseReservations.companyId, this.binding.companyId), eq(runnerApiResponseReservations.runId, this.binding.runId),
+      eq(runnerApiResponseReservations.assetId, assetId),
+    )).limit(1);
+    if (capture) return true;
+    const current = await this.#boundContext();
+    if (!this.binding.workspaceBridge || current.actor.adapterConfig?.dotWorkspaceAccess !== true) return false;
+    const [output] = await this.db.select({ id: issueAttachments.id }).from(issueAttachments).where(and(
+      eq(issueAttachments.companyId, this.binding.companyId), eq(issueAttachments.issueId, this.binding.issueId),
+      eq(issueAttachments.originatingRunId, this.binding.runId), eq(issueAttachments.assetId, assetId),
+    )).limit(1);
+    return !!output;
+  }
+
+  async #assertDotApiFileAccess(path: string, input: { pathParams?: Record<string, string>; files?: RunnerApiFile[] }) {
+    if (!this.binding.dotRuntime) return;
+    const current = await this.#boundContext();
+    await this.binding.assertBridgeAuthority?.();
+    if (/^\/api\/attachments\/\{[^}]+\}\/content$/.test(path))
+      throw forbidden("Dot must use read_task_attachment for verified contents of its current assigned task; direct attachment API downloads are disabled.");
+    if (/^\/api\/issues\/\{[^}]+\}\/file-resources\/content$/.test(path))
+      throw forbidden("Dot must use workspace_read with its separate workspace grant; direct workspace API downloads are disabled.");
+    if (/^\/api\/assets\/\{[^}]+\}\/content$/.test(path)) {
+      const assetId = input.pathParams?.assetId;
+      if (!assetId || !/^[0-9a-f-]{36}$/i.test(assetId) || !await this.#dotOwnsApiAsset(assetId))
+        throw forbidden("Dot may read API captures and outputs from this run only. Use read_task_attachment for assigned input files.");
+    }
+    for (const file of input.files ?? []) {
+      if (file.path && (!this.binding.workspaceBridge || !this.binding.workspaceRoot || current.actor.adapterConfig?.dotWorkspaceAccess !== true))
+        throw forbidden("Dot workspace access is required for API file uploads.");
+      if (file.artifactId && (!/^[0-9a-f-]{36}$/i.test(file.artifactId) || !await this.#dotOwnsApiAsset(file.artifactId)))
+        throw forbidden("Dot may upload API captures and outputs from this run only.");
+    }
+  }
+
   async #readApiFile(file: RunnerApiFile): Promise<{ bytes: Buffer; filename: string; contentType: string }> {
+    if (this.binding.dotRuntime) {
+      await this.#assertDotApiFileAccess("", { files: [file] });
+      if (file.path) {
+        const bytes = await readWorkspaceUploadFile(this.binding.workspaceRoot!, file.path);
+        await this.#assertDotApiFileAccess("", { files: [file] });
+        return { bytes, filename: basename(file.path), contentType: "application/octet-stream" };
+      }
+    }
     if (file.artifactId) {
       const asset = await assetService(this.db).getById(file.artifactId);
       if (!asset || asset.companyId !== this.binding.companyId) throw forbidden("Artifact is not available in this company");
@@ -1488,6 +1541,11 @@ export class PaperclipRunnerToolAuthority {
       idempotencyKey,
       input,
       async (tx, context) => {
+        if (this.binding.dotRuntime) {
+          if (!this.binding.workspaceBridge || context.actor.adapterConfig?.dotWorkspaceAccess !== true)
+            throw forbidden("Dot workspace access is required to publish workspace files.");
+          await this.binding.assertBridgeAuthority?.();
+        }
         const prepared = await prepareNativeRunnerFileHandoff({
           db: tx,
           binding: {
