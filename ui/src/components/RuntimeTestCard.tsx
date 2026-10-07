@@ -41,7 +41,7 @@ const copy = {
 const prerequisiteCopy = {
   idle: { title: "Check prerequisites", description: "Check instance settings and public connection configuration.", action: "Check setup" },
   running: { title: "Checking prerequisites", description: "Checking instance settings and public connection configuration…", action: "Checking…" },
-  pass: { title: "Setup checks passed", description: "Complete pairing and verify event delivery before assigning work.", action: "Check again" },
+  pass: { title: "Setup checks passed", description: "Review the setup details before assigning work.", action: "Check again" },
   warn: { title: "Pairing required", description: "Create this agent, then pair it and verify event delivery.", action: "Check again" },
   fail: { title: "Prerequisite check failed", description: "Review the setup details and retry.", action: "Retry check" },
 } as const;
