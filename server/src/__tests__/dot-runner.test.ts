@@ -10,7 +10,7 @@ import express, { type Request } from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, dotAgentBindings, dotMailboxItems, dotRunnerAssignments, dotRunnerOperations,
-  heartbeatRuns, agentWakeupRequests, issues, nativeRunResults, nativeRunFinalizations, completionContracts, mcpEventDeliveries, workspaceOperations } from "@paperclipai/db";
+  heartbeatRuns, agentWakeupRequests, issues, nativeRunResults, nativeRunFinalizations, completionContracts, mcpEventDeliveries, workspaceOperations, workAssessments, statusDecisions, issueThreadInteractions } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createPublicMcpOAuth, DEVICE_GRANT } from "../services/public-mcp/oauth.js";
 import { createPublicMcpExecutor } from "../services/public-mcp/capabilities.js";
@@ -206,22 +206,68 @@ describe("durable Dot Runner integration", () => {
 
   it("allows paused Dot fence delivery and acknowledgements without task authority", async () => {
     const f = await fixture();
-    const { assignment } = await offeredWork(f);
-    await db.update(dotRunnerAssignments).set({ status: "fenced" }).where(eq(dotRunnerAssignments.id, assignment.id));
-    await db.insert(dotMailboxItems).values({ companyId: f.company.id, bindingId: f.snapshot.bindingId,
-      bindingGeneration: f.snapshot.bindingGeneration, assignmentId: assignment.id, kind: "authority_revoked", sourceEventId: randomUUID(), references: { assignmentId: assignment.id } });
+    const { run, assignment } = await offeredWork(f);
+    const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Work paused before inbox read", assigneeAgentId: f.agent.id }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue!.id }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: f.company.id, issueId: issue!.id, phase: "observed" });
+    const port = f.broker.port({ binding: { companyId: f.company.id, agentId: f.agent.id, runId: run.id }, provider: { binding: f.snapshot } });
+    await port.dispatch({ sourceEventId: randomUUID(), payload: { kind: "authority_revoked", binding: {
+      ...f.snapshot, runId: run.id, normalizedSessionId: assignment.normalizedSessionId,
+      turnId: assignment.turnId, assignmentRevision: assignment.revision,
+    } } });
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
     const principal = await f.oauth.authenticate(f.tokens.access_token);
     const tools = createDotRunnerMcpTools(db);
     await f.events.tick();
     expect(f.received.at(-1)?.data.kind).toBe("authority_revoked");
     const inbox = await tools.callTool(principal, "paperclip_dot_inbox", { after: 0 });
-    expect(inbox).toMatchObject({ result: { nextCursor: 0, items: [{ kind: "authority_revoked" }] } });
+    expect(inbox).toMatchObject({ result: { nextCursor: 0, items: [{ kind: "authority_revoked", assignmentId: assignment.id, references: { assignmentId: assignment.id } }] } });
+    const fencedAssignmentId = (inbox!.result as { items: Array<{ references: { assignmentId: string } }> }).items[0]!.references.assignmentId;
     await expect(tools.callTool(principal, "paperclip_dot_tasks", {})).rejects.toThrow("authority");
     await expect(tools.callTool(principal, "paperclip_dot_read", { assignmentId: assignment.id })).rejects.toThrow("authority");
     await expect(tools.callTool(principal, "paperclip_dot_accept", { assignmentId: assignment.id, requestId: randomUUID() })).rejects.toThrow("authority");
-    expect(await tools.callTool(principal, "paperclip_dot_control_ack", { assignmentId: assignment.id, requestId: randomUUID() })).toMatchObject({ result: { status: "acknowledged", externalStopConfirmed: false } });
+    expect(await tools.callTool(principal, "paperclip_dot_control_ack", { assignmentId: fencedAssignmentId, requestId: randomUUID() })).toMatchObject({ result: { status: "acknowledged", externalStopConfirmed: false } });
     await f.events.unsubscribe(principal, f.subscription); await f.events.stop();
+  }, 30000);
+
+  it("authorizes admitted Dot reviews while preserving the worker and rejecting stale review authority", async () => {
+    const f = await fixture();
+    const companyId = f.company.id;
+    const [worker] = await db.insert(agents).values({ companyId, name: "Original worker", status: "active", adapterType: "paperclip_runner" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Review another agent's work", status: "in_review", statusVersion: 3, assigneeAgentId: worker!.id }).returning();
+    const issueId = issue!.id;
+    const [contract] = await db.insert(completionContracts).values({ companyId, issueId, revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "fixture",
+      risk: "low", completionAuthority: "agent", incompleteCriteriaPolicy: "block", contractJson: {}, canonicalSha256: randomUUID(), createdByActorType: "user", createdByActorId: f.userId }).returning();
+    const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId: worker!.id, nativeIssueId: issueId, runtimeMode: "native", status: "succeeded",
+      completionContractId: contract!.id, completionContractSha256: contract!.canonicalSha256 }).returning();
+    const [result] = await db.insert(nativeRunResults).values({ companyId, issueId, runId: source!.id, completionContractId: contract!.id,
+      serverFingerprint: randomUUID(), schemaStatus: "accepted", resultJson: {}, canonicalSha256: randomUUID() }).returning();
+    const [assessment] = await db.insert(workAssessments).values({ companyId, issueId, runId: source!.id, contractId: contract!.id, resultId: result!.id,
+      triggerKind: "native_result", triggerActorCompanyId: companyId, priorIssueStatus: "in_progress", priorStatusVersion: 2, policyVersion: "fixture", assessmentJson: {}, inputDigest: randomUUID() }).returning();
+    const [decision] = await db.insert(statusDecisions).values({ companyId, issueId, runId: source!.id, assessmentId: assessment!.id, decisionVersion: 1,
+      policyVersion: "fixture", fromStatus: "in_progress", toStatus: "in_review", reasonCode: "explicit_review", decisionJson: { projectedStatusVersion: 3 }, decisionDigest: randomUUID(), applicationState: "applied" }).returning();
+    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId, kind: "request_confirmation", sourceRunId: source!.id,
+      addresseeAgentId: f.agent.id, createdByAgentId: worker!.id,
+      payload: { version: 1, prompt: "Review the completed work.", target: { type: "custom", key: "native_completion_review", revisionId: decision!.id } } }).returning();
+    const { run, assignment } = await offeredWork(f);
+    const contextSnapshot = { issueId, nativeReviewInteractionId: interaction!.id, nativeReviewDecisionId: decision!.id };
+    await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativeIssueId: issueId, nativeSessionId: assignment.normalizedSessionId, contextSnapshot }).where(eq(heartbeatRuns.id, run.id));
+    await db.update(issues).set({ lastStatusDecisionId: decision!.id, executionRunId: run.id, checkoutRunId: source!.id }).where(eq(issues.id, issueId));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId, issueId, phase: "observed", controllerGeneration: assignment.controllerGeneration, leaseExpiresAt: new Date(Date.now() + 60_000) });
+    await expect(f.broker.read(f.principal, assignment.id)).resolves.toMatchObject({ assignmentId: assignment.id });
+    await expect(f.broker.operation(f.principal, assignment.id, randomUUID(), "accept", {})).resolves.toMatchObject({ status: "pending" });
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+    await expect(f.broker.read(f.principal, assignment.id)).rejects.toThrow("execution authority");
+    await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, issueId));
+    await db.update(issueThreadInteractions).set({ addresseeAgentId: worker!.id }).where(eq(issueThreadInteractions.id, interaction!.id));
+    await expect(f.broker.read(f.principal, assignment.id)).rejects.toThrow("execution authority");
+    await db.update(issueThreadInteractions).set({ addresseeAgentId: f.agent.id, status: "accepted", resolvedByAgentId: f.agent.id, resolvedByRunId: run.id }).where(eq(issueThreadInteractions.id, interaction!.id));
+    await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, issueId));
+    await expect(f.broker.read(f.principal, assignment.id)).resolves.toMatchObject({ assignmentId: assignment.id });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.assigneeAgentId).toBe(worker!.id);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { ...contextSnapshot, nativeReviewDecisionId: randomUUID() } }).where(eq(heartbeatRuns.id, run.id));
+    await expect(f.broker.read(f.principal, assignment.id)).rejects.toThrow("execution authority");
+    await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop();
   }, 30000);
 
   it("verifies reconnects and wakes the same outstanding assignment after exhausted delivery", async () => {

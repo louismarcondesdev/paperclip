@@ -9,6 +9,7 @@ import { McpOAuthError, type McpPrincipal } from "./public-mcp/oauth.js";
 import type { PublicMcpToolExtension } from "./public-mcp/dot-runner.js";
 import { boardAuthService } from "./board-auth.js";
 import { logActivity } from "./activity-log.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const enabled = () => process.env.PAPERCLIP_ENABLE_OPENAI_DOT === "1";
@@ -52,8 +53,16 @@ function createBroker(db: Db) {
     const [agent] = await db.select().from(agents).where(eq(agents.id, a.agentId));
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId, a.runId), eq(nativeRunFinalizations.companyId, a.companyId)));
     const [issue] = run?.nativeIssueId ? await db.select().from(issues).where(and(eq(issues.id, run.nativeIssueId), eq(issues.companyId, a.companyId))) : [];
+    const reviewContext = readNativeReviewAssignmentContext(run?.contextSnapshot);
+    const review = run && issue && reviewContext ? await getNativeReviewAssignment(db, {
+      companyId: a.companyId, issueId: issue.id, agentId: a.agentId,
+      contextSnapshot: run.contextSnapshot, actingRunId: run.id, allowResolvedByRunId: run.id,
+    }) : null;
+    const ownsTask = issue && run && (reviewContext
+      ? !!review && (review.interaction.status !== "pending" || issue.executionRunId === run.id)
+      : issue.assigneeAgentId === a.agentId && [issue.checkoutRunId, issue.executionRunId].includes(run.id));
     if (!run || run.status !== "running" || run.runtimeMode !== "native" || run.nativeSessionId !== a.normalizedSessionId
-        || !issue || issue.assigneeAgentId !== a.agentId || ![issue.checkoutRunId, issue.executionRunId].includes(run.id)
+        || !ownsTask
         || !coordinator || coordinator.controllerGeneration !== a.controllerGeneration || !coordinator.leaseExpiresAt || coordinator.leaseExpiresAt <= new Date()
         || ["terminal_failure", "turn_stopping", "turn_stopped"].includes(run.nativePhase ?? "")
         || !company || company.status !== "active" || !agent || ["paused", "terminated", "pending_approval"].includes(agent.status)
@@ -352,9 +361,16 @@ function createBroker(db: Db) {
             const [coordinator] = await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
             if (!b || (p.kind !== "authority_revoked" && (b.generation !== ref.bindingGeneration || b.revokedAt)) || !coordinator) throw fail("Runner dispatch authority is unavailable.");
             if (p.kind === "authority_revoked") {
-              await tx.update(assignments).set({ status: "fenced" }).where(eq(assignments.runId, runId));
+              const [fenced] = await tx.update(assignments).set({ status: "fenced" }).where(and(
+                eq(assignments.runId, runId), eq(assignments.bindingId, ref.bindingId),
+                eq(assignments.bindingGeneration, ref.bindingGeneration), eq(assignments.turnId, ref.turnId),
+                eq(assignments.normalizedSessionId, ref.normalizedSessionId), eq(assignments.revision, ref.assignmentRevision),
+              )).returning();
+              // A turn fenced before offering work has no external assignment to acknowledge.
+              if (!fenced) return;
               await tx.insert(mailbox).values({ companyId: b.companyId, bindingId: b.id, bindingGeneration: b.generation,
-                kind: "authority_revoked", sourceEventId: event.sourceEventId, references: { runId, externalStopConfirmed: false } }).onConflictDoNothing(); return;
+                assignmentId: fenced.id, kind: "authority_revoked", sourceEventId: event.sourceEventId,
+                references: { assignmentId: fenced.id, runId, externalStopConfirmed: false } }).onConflictDoNothing(); return;
             }
             const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, ref.companyId), eq(heartbeatRuns.agentId, ref.agentId)));
             if (b.status !== "ready" || !run || run.status !== "running" || run.runtimeMode !== "native" || run.nativeSessionId !== ref.normalizedSessionId
