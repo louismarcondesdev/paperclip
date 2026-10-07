@@ -95,7 +95,7 @@ function createBroker(db: Db) {
   return {
     enabled,
     async createPairing(input: { companyId: string; agentId: string; operatorId: string; dotUrl?: string }) {
-      if (!await enabled()) throw fail("Enable OpenAI Dot, Paperclip Runner, and Assistant connections (MCP) in experimental settings.");
+      if (!await enabled()) throw fail("Enable OpenAI Dot and Assistant connections (MCP) in experimental settings.");
       if (input.dotUrl && !/^https:\/\/chatgpt\.com\/dots\/[A-Za-z0-9-]+$/.test(input.dotUrl)) throw fail("Use the Dot's ChatGPT URL.");
       const code = randomBytes(24).toString("base64url");
       const binding = await db.transaction(async tx => {

@@ -65,6 +65,11 @@ Database migration `0312_broken_sentinels.sql` adds only Dot tables and extensio
 after the merged gateway migrations. It is safe to reapply. The earlier
 prototype migration number is retired; published master migrations are intact.
 
+Company package imports use the same independent Dot option. An unpaired imported
+Dot can be saved after the external billing acknowledgement; pair it before
+assigning work. The dev launcher also prepares the shared Runner binary when
+Dot is enabled, even when the general Runner option is off.
+
 ## Troubleshoot plugin OAuth discovery
 
 Use the exact server URL `<origin>/mcp/runner` with OAuth authentication. The
