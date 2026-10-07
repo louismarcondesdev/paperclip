@@ -117,12 +117,6 @@ export function resolveNativeRuntimeMode(input: {
       reason: "direct_adapter",
     };
   }
-  if (!input.enabled) {
-    throw ineligible(
-      "paperclip_runner_rollout_disabled",
-      "Paperclip Runner is experimental and disabled on this instance.",
-    );
-  }
   let runnerProfile: PaperclipRunnerProviderProfile;
   try {
     runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig);
@@ -132,7 +126,15 @@ export function resolveNativeRuntimeMode(input: {
     }
     throw error;
   }
-  if (runnerProfile.provider === "openai_dot" && input.dotEnabled !== true) throw ineligible("paperclip_runner_dot_disabled", "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings before assigning new work.");
+  // Dot has its own rollout; enabling it does not opt in other Runner providers.
+  if (runnerProfile.provider === "openai_dot") {
+    if (input.dotEnabled !== true) throw ineligible("paperclip_runner_dot_disabled", "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings before assigning new work.");
+  } else if (!input.enabled) {
+    throw ineligible(
+      "paperclip_runner_rollout_disabled",
+      "Paperclip Runner is experimental and disabled on this instance.",
+    );
+  }
   if (
     input.agent.adapterType !== "paperclip_runner"
     || input.agent.status !== "active" && input.agent.status !== "running"

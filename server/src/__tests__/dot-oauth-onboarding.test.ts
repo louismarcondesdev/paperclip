@@ -19,7 +19,7 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     temp = await startEmbeddedPostgresTestDatabase("paperclip-dot-onboarding-");
     db = createDb(temp.connectionString);
   }, 120000);
-  beforeEach(async () => { await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableOpenAiDot: true, enableNativeRunner: true }); });
+  beforeEach(async () => { await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableOpenAiDot: true, enableNativeRunner: false }); });
   afterAll(async () => { await temp?.cleanup(); });
   async function fixture(authorizationOrigin?: string) {
     const userId = randomUUID();
@@ -97,7 +97,7 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     await expect(f.oauth.consentDotPairing(f.id, f.pairing.pairingCode)).rejects.toThrow();
     await expect(f.oauth.consentDotPairing(await f.begin(), f.pairing.pairingCode)).rejects.toThrow();
   });
-  it.each(["expired-code", "expired-request", "revoked", "paused", "viewer", "wrong-company", "runner-disabled"])("rejects %s without creating a grant", async failure => {
+  it.each(["expired-code", "expired-request", "revoked", "paused", "viewer", "wrong-company", "dot-disabled", "mcp-disabled"])("rejects %s without creating a grant", async failure => {
     const f = await fixture();
     let id = f.id;
     if (failure === "expired-code") await db.update(dotAgentBindings).set({ pairingExpiresAt: new Date(0) }).where(eq(dotAgentBindings.id, f.pairing.bindingId));
@@ -106,7 +106,8 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     if (failure === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
     if (failure === "viewer") await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, f.company.id), eq(companyMemberships.principalId, f.userId)));
     if (failure === "wrong-company") id = await f.begin({ company_id: randomUUID() });
-    if (failure === "runner-disabled") await instanceSettingsService(db).updateExperimental({ enableNativeRunner: false });
+    if (failure === "dot-disabled") await instanceSettingsService(db).updateExperimental({ enableOpenAiDot: false });
+    if (failure === "mcp-disabled") await instanceSettingsService(db).updateExperimental({ enablePublicMcp: false });
     await expect(f.oauth.describeDotPairing(id, f.pairing.pairingCode)).rejects.toThrow();
     await expect(f.oauth.consentDotPairing(id, f.pairing.pairingCode)).rejects.toThrow();
     expect(await db.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.userId, f.userId))).toHaveLength(0);

@@ -265,7 +265,6 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     if (!agentConnection) throw new McpOAuthError("access_denied", "Use the dedicated Dot agent connection.", 403);
     if (!/^[A-Za-z0-9_-]{32}$/.test(pairingCode)) throw invalidGrant();
     await assertEnabled(queryDb);
-    if (!(await instanceSettingsService(queryDb).getExperimental()).enableNativeRunner) throw new PublicMcpDisabledError();
     const [request] = await queryDb.select().from(mcpOauthRequests).where(eq(mcpOauthRequests.id, id)).for("update");
     if (!request || request.resource !== config.resource || request.decidedAt || request.expiresAt <= new Date()) throw invalidGrant();
     const [binding] = await queryDb.select().from(dotAgentBindings).where(and(

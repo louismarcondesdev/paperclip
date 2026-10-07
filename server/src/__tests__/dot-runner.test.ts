@@ -45,14 +45,14 @@ describe("durable Dot Runner integration", () => {
     vi.stubEnv("PAPERCLIP_RUNNER_BINARY", join(runnerRoot, "runner/target/release", process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd"));
     vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", join(root, "runner-state"));
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
-    await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableOpenAiDot: true, enableNativeRunner: true });
+    await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableOpenAiDot: true, enableNativeRunner: false });
   }, 360000);
   afterAll(async () => { await temporary?.cleanup(); await rm(root, { recursive: true, force: true }); vi.unstubAllEnvs(); });
 
   it("requires each persisted prerequisite for pairing and new work without relying on the retired environment flag", async () => {
     const settings = instanceSettingsService(db);
     const broker = dotRunnerBroker(db);
-    for (const key of ["enableOpenAiDot", "enablePublicMcp", "enableNativeRunner"] as const) {
+    for (const key of ["enableOpenAiDot", "enablePublicMcp"] as const) {
       await settings.updateExperimental({ [key]: false });
       try {
         vi.stubEnv("PAPERCLIP_ENABLE_OPENAI_DOT", "1");
@@ -75,7 +75,10 @@ describe("durable Dot Runner integration", () => {
       workspaceId: null,
     };
     expect(() => resolveNativeRuntimeMode(input)).toThrow("experimental settings");
-    expect(resolveNativeRuntimeMode({ ...input, dotEnabled: true })).toMatchObject({ kind: "native", profile: { backend: "openai_dot_mcp" } });
+    expect(resolveNativeRuntimeMode({ ...input, enabled: false, dotEnabled: true })).toMatchObject({ kind: "native", profile: { backend: "openai_dot_mcp" } });
+    expect(() => resolveNativeRuntimeMode({ ...input, enabled: false, dotEnabled: true,
+      adapterConfig: { provider: "codex" },
+    })).toThrow("Paperclip Runner is experimental and disabled");
     expect(resolveHeartbeatNativeRuntimeMode({ ...input, enabled: false, dotEnabled: false,
       persisted: { runtimeMode: "native", runtimeModeReason: null, runtimeModeResolvedAt: new Date(), driverKind: "openai_dot_mcp" },
     })).toMatchObject({ kind: "native", profile: { backend: "openai_dot_mcp" } });

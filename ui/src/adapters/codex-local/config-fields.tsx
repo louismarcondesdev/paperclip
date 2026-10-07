@@ -45,7 +45,6 @@ const runnerHarnessOptions = [
   { value: "aws_agentcore", label: "AWS AgentCore", adapter: "aws_agentcore" },
   { value: "acpx", label: "ACP agents", adapter: "acpx_local" },
   { value: "grok", label: "Grok Build", adapter: "grok_local" },
-  { value: "openai_dot", label: "OpenAI Dot (experimental)", adapter: "codex_local" },
 ];
 
 export function CodexLocalConfigFields({
@@ -63,7 +62,6 @@ export function CodexLocalConfigFields({
   models,
   hideInstructionsFile,
   managedSandboxOnly,
-  openAiDotEnabled,
 }: AdapterConfigFieldsProps) {
   const runnerManaged = adapterType === "paperclip_runner";
   // The execution engine picks which binary runs on the execution host, and the
@@ -203,7 +201,7 @@ export function CodexLocalConfigFields({
           </select>
         </Field>
       )}
-      {runnerManaged && (
+      {runnerManaged && runnerProvider !== "openai_dot" && (
         <Field configSection="adapter"
           label="Harness"
           hint="Choose the agent harness that runs your tasks."
@@ -253,7 +251,7 @@ export function CodexLocalConfigFields({
           >
             <SelectTrigger className="w-full" aria-label="Harness"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {runnerHarnessOptions.filter((option) => option.value !== "openai_dot" || openAiDotEnabled || runnerProvider === "openai_dot").map((option) => (
+              {runnerHarnessOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
                   <AdapterMark type={option.adapter} className="size-4" />
                   {option.label}

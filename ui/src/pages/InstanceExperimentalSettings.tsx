@@ -471,8 +471,8 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="OpenAI Dot"
-          description="Let your OpenAI Dot take assignments and use Paperclip task tools through the Runner. Pair the Dot and verify event delivery before assigning work."
-          footnote="Requires Paperclip Runner, Assistant connections (MCP), and an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
+          description="Add OpenAI Dot as a standalone agent choice. Pair your Dot and verify event delivery before assigning work."
+          footnote="Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
           checked={experimentalQuery.data?.enableOpenAiDot === true}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableOpenAiDot: checked })}
           disabled={toggleMutation.isPending}

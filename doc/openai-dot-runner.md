@@ -13,12 +13,15 @@ controller deployments are not qualified. The feature is off by default.
 ## Enable and pair
 
 1. Configure `PAPERCLIP_PUBLIC_URL` to the instance's stable HTTPS origin and
-   enable **Assistant connections (MCP)**, **Paperclip Runner**, and **OpenAI Dot**
+   enable **Assistant connections (MCP)** and **OpenAI Dot**
    in **Instance settings → Experimental**. The instance must use authenticated
    sign-in. These settings are saved and take effect without a restart; the old
    `PAPERCLIP_ENABLE_OPENAI_DOT` environment flag no longer enables the provider.
-2. Create an approved Paperclip Runner agent with provider **OpenAI Dot**.
-   Acknowledge that its provider billing is external and unmetered. Save it.
+2. In **Add agent**, choose the standalone **OpenAI Dot** option.
+   Acknowledge that its provider billing is external and unmetered, then save it.
+   Approve the agent if company policy requires it. Dot uses the shared Runner
+   internally; its own experimental toggle does not require enabling the general
+   **Paperclip Runner** option and does not enable other Runner providers.
 3. In the agent configuration, choose **Pair Dot**, then **Set up with Dot**.
    The shared setup-prompt component copies the MCP URL, one-use pairing code,
    expiry, and event instructions. Paste the prompt into your Dot so it can add

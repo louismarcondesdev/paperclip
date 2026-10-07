@@ -27,7 +27,7 @@ function createBroker(db: Db) {
   const settings = instanceSettingsService(db);
   async function enabled() {
     const experimental = await settings.getExperimental();
-    return experimental.enableOpenAiDot && experimental.enableNativeRunner && experimental.enablePublicMcp;
+    return experimental.enableOpenAiDot && experimental.enablePublicMcp;
   }
   const ports = new Map<string, { token: symbol; send: (op: ExternalProviderOperation) => Promise<void>; revoke?: () => Promise<void> }>();
   async function principalBinding(principal: McpPrincipal, requireReady = true, allowPaused = false) {

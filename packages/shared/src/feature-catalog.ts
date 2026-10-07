@@ -122,7 +122,7 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   },
   enableOpenAiDot: {
     title: "OpenAI Dot",
-    description: "Let an OpenAI Dot work as a Paperclip Runner agent through MCP Events. Requires Paperclip Runner, Assistant connections (MCP), and an authenticated instance with a public HTTPS URL.",
+    description: "Add OpenAI Dot as a standalone agent choice with its own experimental opt-in. Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
